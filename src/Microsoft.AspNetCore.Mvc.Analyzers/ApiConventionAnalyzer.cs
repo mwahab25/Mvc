@@ -3,7 +3,6 @@
 
 using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -51,32 +50,31 @@ namespace Microsoft.AspNetCore.Mvc.Analyzers
                     return;
                 }
 
-                var conventionAttributes = GetConventionTypeAttributes(symbolCache, method);
-                var declaredResponseMetadata = SymbolApiResponseMetadataProvider.GetDeclaredResponseMetadata(symbolCache, method, conventionAttributes);
+                var declaredResponseMetadata = SymbolApiResponseMetadataProvider.GetDeclaredResponseMetadata(symbolCache, method);
 
-                var hasUnreadableStatusCodes = SymbolApiResponseMetadataProvider.TryGetActualResponseMetadata(symbolCache, semanticModel, methodSyntax, cancellationToken, out var actualResponseMetadata);
+                var hasUnreadableStatusCodes = !SymbolApiResponseMetadataProvider.TryGetActualResponseMetadata(symbolCache, semanticModel, methodSyntax, cancellationToken, out var actualResponseMetadata);
                 var hasUndocumentedStatusCodes = false;
-                foreach (var item in actualResponseMetadata)
+                foreach (var actualMetadata in actualResponseMetadata)
                 {
-                    var location = item.ReturnStatement.GetLocation();
+                    var location = actualMetadata.ReturnStatement.GetLocation();
 
-                    if (item.IsDefaultResponse)
+                    if (!DeclaredApiResponseMetadata.HasStatusCode(declaredResponseMetadata, actualMetadata))
                     {
-                        if (!(HasStatusCode(declaredResponseMetadata, 200) || HasStatusCode(declaredResponseMetadata, 201)))
+                        hasUndocumentedStatusCodes = true;
+                        if (actualMetadata.IsDefaultResponse)
                         {
-                            hasUndocumentedStatusCodes = true;
                             syntaxNodeContext.ReportDiagnostic(Diagnostic.Create(
                                 DiagnosticDescriptors.MVC1005_ActionReturnsUndocumentedSuccessResult,
                                 location));
                         }
-                    }
-                    else if (!HasStatusCode(declaredResponseMetadata, item.StatusCode))
-                    {
-                        hasUndocumentedStatusCodes = true;
-                        syntaxNodeContext.ReportDiagnostic(Diagnostic.Create(
-                            DiagnosticDescriptors.MVC1004_ActionReturnsUndocumentedStatusCode,
-                            location,
-                            item.StatusCode));
+                        else
+                        {
+                            syntaxNodeContext.ReportDiagnostic(Diagnostic.Create(
+                               DiagnosticDescriptors.MVC1004_ActionReturnsUndocumentedStatusCode,
+                               location,
+                               actualMetadata.StatusCode));
+
+                        }
                     }
                 }
 
@@ -100,17 +98,6 @@ namespace Microsoft.AspNetCore.Mvc.Analyzers
                 }
 
             }, SyntaxKind.MethodDeclaration);
-        }
-
-        internal IReadOnlyList<AttributeData> GetConventionTypeAttributes(ApiControllerSymbolCache symbolCache, IMethodSymbol method)
-        {
-            var attributes = method.ContainingType.GetAttributes(symbolCache.ApiConventionTypeAttribute).ToArray();
-            if (attributes.Length == 0)
-            {
-                attributes = method.ContainingAssembly.GetAttributes(symbolCache.ApiConventionTypeAttribute).ToArray();
-            }
-
-            return attributes;
         }
 
         internal static bool ShouldEvaluateMethod(ApiControllerSymbolCache symbolCache, IMethodSymbol method)
@@ -143,25 +130,6 @@ namespace Microsoft.AspNetCore.Mvc.Analyzers
             return true;
         }
 
-        internal static bool HasStatusCode(IList<DeclaredApiResponseMetadata> declaredApiResponseMetadata, int statusCode)
-        {
-            if (declaredApiResponseMetadata.Count == 0)
-            {
-                // When no status code is declared, a 200 OK is implied.
-                return statusCode == 200;
-            }
-
-            for (var i = 0; i < declaredApiResponseMetadata.Count; i++)
-            {
-                if (declaredApiResponseMetadata[i].StatusCode == statusCode)
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
         internal static bool HasStatusCode(IList<ActualApiResponseMetadata> actualResponseMetadata, int statusCode)
         {
             for (var i = 0; i < actualResponseMetadata.Count; i++)
@@ -171,7 +139,7 @@ namespace Microsoft.AspNetCore.Mvc.Analyzers
                     return statusCode == 200 || statusCode == 201;
                 }
 
-                else if(actualResponseMetadata[i].StatusCode == statusCode)
+                else if (actualResponseMetadata[i].StatusCode == statusCode)
                 {
                     return true;
                 }

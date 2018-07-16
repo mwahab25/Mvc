@@ -19,8 +19,7 @@ namespace Microsoft.AspNetCore.Mvc.Analyzers
 
         internal static IList<DeclaredApiResponseMetadata> GetDeclaredResponseMetadata(
             ApiControllerSymbolCache symbolCache,
-            IMethodSymbol method,
-            IReadOnlyList<AttributeData> conventionTypeAttributes)
+            IMethodSymbol method)
         {
             var metadataItems = GetResponseMetadataFromMethodAttributes(symbolCache, method);
             if (metadataItems.Count != 0)
@@ -28,6 +27,7 @@ namespace Microsoft.AspNetCore.Mvc.Analyzers
                 return metadataItems;
             }
 
+            var conventionTypeAttributes = GetConventionTypes(symbolCache, method);
             metadataItems = GetResponseMetadataFromConventions(symbolCache, method, conventionTypeAttributes);
             return metadataItems;
         }
@@ -35,17 +35,10 @@ namespace Microsoft.AspNetCore.Mvc.Analyzers
         private static IList<DeclaredApiResponseMetadata> GetResponseMetadataFromConventions(
             ApiControllerSymbolCache symbolCache,
             IMethodSymbol method,
-            IReadOnlyList<AttributeData> attributes)
+            IReadOnlyList<ITypeSymbol> conventionTypes)
         {
-            foreach (var attribute in attributes)
+            foreach (var conventionType in conventionTypes)
             {
-                if (attribute.ConstructorArguments.Length != 1 ||
-                    attribute.ConstructorArguments[0].Kind != TypedConstantKind.Type ||
-                    !(attribute.ConstructorArguments[0].Value is ITypeSymbol conventionType))
-                {
-                    continue;
-                }
-
                 foreach (var conventionMethod in conventionType.GetMembers().OfType<IMethodSymbol>())
                 {
                     if (!conventionMethod.IsStatic || conventionMethod.DeclaredAccessibility != Accessibility.Public)
@@ -72,12 +65,37 @@ namespace Microsoft.AspNetCore.Mvc.Analyzers
             foreach (var attribute in responseMetadataAttributes)
             {
                 var statusCode = GetStatusCode(attribute);
-                var metadata = new DeclaredApiResponseMetadata(statusCode, attribute, convention: null);
+                var metadata = new DeclaredApiResponseMetadata(statusCode, attribute, attributeSource: methodSymbol);
 
                 metadataItems.Add(metadata);
             }
 
             return metadataItems;
+        }
+
+        internal static IReadOnlyList<ITypeSymbol> GetConventionTypes(ApiControllerSymbolCache symbolCache, IMethodSymbol method)
+        {
+            var attributes = method.ContainingType.GetAttributes(symbolCache.ApiConventionTypeAttribute).ToArray();
+            if (attributes.Length == 0)
+            {
+                attributes = method.ContainingAssembly.GetAttributes(symbolCache.ApiConventionTypeAttribute).ToArray();
+            }
+
+            var conventionTypes = new List<ITypeSymbol>();
+            for (var i = 0; i < attributes.Length; i++)
+            {
+                var attribute = attributes[i];
+                if (attribute.ConstructorArguments.Length != 1 ||
+                    attribute.ConstructorArguments[0].Kind != TypedConstantKind.Type ||
+                    !(attribute.ConstructorArguments[0].Value is ITypeSymbol conventionType))
+                {
+                    continue;
+                }
+
+                conventionTypes.Add(conventionType);
+            }
+
+            return conventionTypes;
         }
 
         internal static int GetStatusCode(AttributeData attribute)
@@ -133,7 +151,7 @@ namespace Microsoft.AspNetCore.Mvc.Analyzers
         {
             actualResponseMetadata = new List<ActualApiResponseMetadata>();
 
-            var hasUnreadableReturnStatements = false;
+            var allReturnStatementsReadable = true;
 
             foreach (var returnStatementSyntax in methodSyntax.DescendantNodes(_shouldDescendIntoChildren).OfType<ReturnStatementSyntax>())
             {
@@ -149,11 +167,11 @@ namespace Microsoft.AspNetCore.Mvc.Analyzers
                 }
                 else
                 {
-                    hasUnreadableReturnStatements = true;
+                    allReturnStatementsReadable = false;
                 }
             }
 
-            return hasUnreadableReturnStatements;
+            return allReturnStatementsReadable;
         }
 
         internal static ActualApiResponseMetadata? InspectReturnStatementSyntax(
